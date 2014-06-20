@@ -282,7 +282,7 @@ MGPU_HOST void MergePairsDynamic(KeysIt1 aKeys_global_, ValsIt1 aVals_global_,
 	// Get the occupancy of the merge kernel.
 	int occ = context.Device().OccupancyDevice(
 		(void*)&KernelDynamicMerge<Tuning, true, false, KeysIt1, ACount,
-		KeysIt2, BCount, KeysIt3, const int*, const int*, int*, Comp>, NT);
+		KeysIt2, BCount, KeysIt3, ValsIt1, ValsIt2, ValsIt3, Comp>, NT);
 
 	// Provision a fresh counter for work distribution.	
 	int* counter_global = context.GetCounter();
