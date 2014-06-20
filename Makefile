@@ -1,3 +1,7 @@
+libmgpu :
+	nvcc -c -I include -gencode arch=compute_20,sm_20 \
+		-gencode arch=compute_35,sm_35 
+
 all :
 	make -C benchmarkscan -f Makefile
 	make -C benchmarkinsert -f Makefile

@@ -8,20 +8,15 @@ build: benchmarksort
 benchmarksort.o: benchmarksort.cu 
 	nvcc $(NVCCFLAGS) -o $@ -c $<
 
-mgpucontext.o: ../src/mgpucontext.cu
-	nvcc $(NVCCFLAGS) -o $@ -c $<
-
-mgpuutil.o: ../src/mgpuutil.cpp
-	nvcc $(NVCCFLAGS) -o $@ -c $<
-
-benchmarksort: benchmarksort.o mgpucontext.o mgpuutil.o
-	nvcc $(NVCCFLAGS) -o $@ $+
+benchmarksort: benchmarksort.o 
+	make -C ../lib -f Makefile
+	nvcc $(NVCCFLAGS) -lmgpu -o $@ $<
 
 run: build
 	./benchmarksort
 
 clean:
-	rm -f benchmarksort.o mgpucontext.o mgpuutil.o benchmarksort
+	rm -f benchmarksort.o benchmarksort
 
 clobber:
 	clean

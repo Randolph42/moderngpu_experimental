@@ -117,6 +117,11 @@ public:
 	int NumSMs() const { return _prop.multiProcessorCount; }
 	int ArchVersion() const { return 100 * _prop.major + 10 * _prop.minor; }
 
+	// Calculate occupancy of function. Do not rely on this for correctness.
+	// Returns likely number of kernels that can run simultaneously.
+	int OccupancySM(const void* func, int ctaSize);
+	int OccupancyDevice(const void* func, int ctaSize);
+
 	// LaunchBox properties.
 	int PTXVersion() const { return _ptxVersion; }
 
@@ -127,10 +132,15 @@ public:
 
 private:
 	CudaDevice() { }		// hide the destructor.
+
+	typedef std::pair<const void*, int> FuncType;
+	std::map<FuncType, int> _occupancyCache;
+
 	int _ordinal;
 	int _ptxVersion;
 	cudaDeviceProp _prop;
 };
+
 
 ////////////////////////////////////////////////////////////////////////////////
 // CudaDeviceMem
@@ -288,6 +298,21 @@ public:
 		return _timer.Throughput(count, numIterations);
 	}
 
+	// Retrieve a quick zero from global memory. Note that these counters are
+	// not guaranteed to persist beyond one kernel launch!
+	int* GetCounter() {
+		if(!_countersCached.get()) {
+			_countersCached = Malloc<int>(NumCachedCounters);
+			_nextCounter = NumCachedCounters;
+		}
+		if(_nextCounter == NumCachedCounters) {
+			cudaMemset(_countersCached->get(), 0, 
+				sizeof(int) * NumCachedCounters);
+			_nextCounter = 0;
+		}
+		return _countersCached->get() + _nextCounter++;
+	}
+
 	virtual long AddRef() {
 		return _noRefCount ? 1 : CudaMemSupport::AddRef();
 	}
@@ -307,6 +332,10 @@ private:
 	CudaTimer _timer;
 	bool _noRefCount;
 	int* _pageLocked;
+
+	static const int NumCachedCounters = 4096;
+	MGPU_MEM(int) _countersCached;
+	int _nextCounter;
 };
 
 ////////////////////////////////////////////////////////////////////////////////

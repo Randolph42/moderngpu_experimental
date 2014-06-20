@@ -57,6 +57,10 @@ const int WARP_SIZE = 32;
 const int LOG_WARP_SIZE = 5;
 
 ////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////
 // Device-side comparison operators
 
 template<typename T>
@@ -361,3 +365,4 @@ MGPU_HOST_DEVICE mgpu::step_iterator<T> operator-(ptrdiff_t diff,
 	mgpu::step_iterator<T> it) {
 	return it + (-diff);
 }
+

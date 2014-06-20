@@ -6,7 +6,7 @@ all: build
 build: benchmarkmerge
 
 benchmarkmerge.o: benchmarkmerge.cu 
-	nvcc $(NVCCFLAGS) -o $@ -c $<
+	nvcc $(NVCCFLAGS) -Xptxas="-v" -o $@ -c $<
 
 mgpucontext.o: ../src/mgpucontext.cu
 	nvcc $(NVCCFLAGS) -o $@ -c $<

@@ -43,27 +43,43 @@ namespace mgpu {
 ////////////////////////////////////////////////////////////////////////////////
 // KernelLoadBalance
 
+template<int NT, int VT>
+struct KernelLoadBalance {
+
+	struct Storage {
+		int indices[NT * (VT + 1)];
+	};
+
+	template<typename InputIt>
+	MGPU_DEVICE static void Kernel(int tid, int block, int aCount,
+		InputIt b_global, int bCount, const int* mp_global, 
+		int* indices_global, Storage& storage) {
+
+		int4 range = CTALoadBalance<NT, VT>(aCount, b_global, bCount, block, 
+			tid, mp_global, storage.indices, false);
+		aCount = range.y - range.x;
+
+		DeviceSharedToGlobal<NT, VT>(aCount, storage.indices, tid, 
+			indices_global + range.x);
+	}
+};
+
+
+////////////////////////////////////////////////////////////////////////////////
+// LoadBalanceSearch with static scheduling.
+
 template<typename Tuning, typename InputIt>
-MGPU_LAUNCH_BOUNDS void KernelLoadBalance(int aCount, InputIt b_global,
+MGPU_LAUNCH_BOUNDS void KernelStaticLoadBalance(int aCount, InputIt b_global,
 	int bCount, const int* mp_global, int* indices_global) {
 
 	typedef MGPU_LAUNCH_PARAMS Params;
 	const int NT = Params::NT;
 	const int VT = Params::VT;
-	__shared__ int indices_shared[NT * (VT + 1)];
-	
-	int tid = threadIdx.x;
-	int block = blockIdx.x;
-	int4 range = CTALoadBalance<NT, VT>(aCount, b_global, bCount, block, tid,
-		mp_global, indices_shared, false);
-	aCount = range.y - range.x;
+	__shared__ typename KernelLoadBalance<NT, VT>::Storage storage;
 
-	DeviceSharedToGlobal<NT, VT>(aCount, indices_shared, tid, 
-		indices_global + range.x, false);
+	KernelLoadBalance<NT, VT>::Kernel(threadIdx.x, blockIdx.x, aCount,
+		b_global, bCount, mp_global, indices_global, storage);
 }
-
-////////////////////////////////////////////////////////////////////////////////
-// LoadBalanceSearch
 
 template<typename InputIt>
 MGPU_HOST void LoadBalanceSearch(int aCount, InputIt b_global, int bCount,
@@ -80,9 +96,84 @@ MGPU_HOST void LoadBalanceSearch(int aCount, InputIt b_global, int bCount,
 		mgpu::less<int>(), context);
 
 	int numBlocks = MGPU_DIV_UP(aCount + bCount, NV);
-	KernelLoadBalance<Tuning><<<numBlocks, launch.x, 0, context.Stream()>>>(
-		aCount, b_global, bCount, partitionsDevice->get(), indices_global);
-	MGPU_SYNC_CHECK("KernelLoadBalance");
+	KernelStaticLoadBalance<Tuning>
+		<<<numBlocks, launch.x, 0, context.Stream()>>>(aCount, b_global,
+		bCount, partitionsDevice->get(), indices_global);
+	MGPU_SYNC_CHECK("KernelStaticLoadBalance");
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+// LoadBalanceSearch with dynamic scheduling.
+
+template<typename Tuning, typename ACount, typename BGlobal, typename BCount,
+	typename IndicesGlobal>
+__global__ void KernelDynamicLoadBalance(int* counter_global, ACount aCount_,
+	BGlobal b_global_, BCount bCount_, int* mp_global, 
+	IndicesGlobal indices_global_) {
+
+	typedef MGPU_LAUNCH_PARAMS Params;
+	const int NT = Params::NT;
+	const int VT = Params::VT;
+	const int NV = NT * VT;
+
+	union Shared {
+		typename WorkDistribution::Storage workDistribution;
+		typename KernelLoadBalance<NT, VT>::Storage loadBalance;
+	};
+	__shared__ Shared shared;
+
+	int tid = threadIdx.x;
+	int aCount = ParamAccess(aCount_);
+	typename ParamType<BGlobal>::Type b_global = ParamAccess(b_global_);
+	int bCount = ParamAccess(bCount_);
+	int* indices_global = ParamAccess(indices_global_);
+
+	int numTiles = MGPU_DIV_UP(aCount + bCount, NV);
+
+	int tile = -1;
+	while(WorkDistribution::WorkStealing(tid, numTiles, counter_global, 
+		shared.workDistribution, tile)) {
+
+		KernelLoadBalance<NT, VT>::Kernel(tid, tile, aCount, b_global, bCount,
+			mp_global, indices_global, shared.loadBalance);
+	}
+}
+
+// The user must provide adequete storage for the tile partitionings.
+// This is (aCount + bCount) / (NT * VT) + 1.
+template<typename ACount, typename BGlobal, typename BCount,
+	typename IndicesGlobal>
+void LoadBalanceSearchDynamic(ACount aCount_, BGlobal b_global_,
+	BCount bCount_, IndicesGlobal indices_global_, int* partitions_global, 
+	CudaContext& context) {
+
+	const int NT = 128;
+	const int VT = 7;
+	const int NV = NT * VT;
+	typedef LaunchBoxVT<NT, VT> Tuning;
+	int2 launch = Tuning::GetLaunchParams(context);
+
+	// Partition the tiles. Store into the user-provided partitions_global
+	// buffer.
+	MergePathPartitionsDynamic<MgpuBoundsUpper>(
+		mgpu::counting_iterator<int>(0), aCount_, b_global_, bCount_, NV,
+		0, partitions_global, mgpu::less<int>(), context);
+		
+	// Compute the occupancy of the load-balancing search kernel.
+	int occ = context.Device().OccupancyDevice(
+		(void*)&KernelDynamicLoadBalance<Tuning, ACount, BGlobal, BCount, 
+			IndicesGlobal>, NT);
+
+	// Get a zeroed counter.
+	int* counter_global = context.GetCounter();
+
+	// Generate the load-balancing search output.
+	KernelDynamicLoadBalance<Tuning><<<occ, NT, 0, context.Stream()>>>(
+		counter_global, aCount_, b_global_, bCount_, partitions_global,
+		indices_global_);
+
+	MGPU_SYNC_CHECK("KernelDynamicLoadBalance");
 }
 
 } // namespace mgpu

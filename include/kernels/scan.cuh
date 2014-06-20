@@ -101,6 +101,12 @@ struct CTATileScan {
 	}
 };
 
+struct KernelScanParallel {
+	
+
+
+};
+
 // KernelScanParallel.
 // Scan all inputs in a single CTA.
 template<typename Tuning, MgpuScanType Type, typename DataIt, typename OutputIt,

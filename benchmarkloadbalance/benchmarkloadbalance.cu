@@ -49,9 +49,8 @@ void CPULoadBalanceSearch(int aCount, const int* b, int bCount, int* indices) {
 		else ++bi;
 	}
 }
-
 void BenchmarkLoadBalance(int total, int numIt, double percentTerms,
-	CudaContext& context) {
+	bool dynamic, CudaContext& context) {
 
 	int count = (int)((1.0 - percentTerms) * total);
 	int numTerms = total - count;
@@ -76,10 +75,26 @@ void BenchmarkLoadBalance(int total, int numIt, double percentTerms,
 
 	ScanExc(countsDevice->get(), numTerms, context);
 
+	// Put the function arguments in device memory for testing the 
+	// dynamically scheduled version.
+	MGPU_MEM(int) aCountDevice = context.Malloc(&count, 1);
+	MGPU_MEM(int) numTermsDevice = context.Malloc(&numTerms, 1);
+	MGPU_MEM(int) tempPartitionsDevice = context.Malloc<int>(
+		MGPU_DIV_UP(count + numTerms, 500) + 1);
+
 	context.Start();
-	for(int it = 0; it < numIt; ++it) 
-		LoadBalanceSearch(count, countsDevice->get(), numTerms, 
-			indexDevice->get(), context);
+	for(int it = 0; it < numIt; ++it) {
+		if(dynamic)
+			// Wrap the dynamic arguments in DeviceAccessor!
+		//	LoadBalanceSearchDynamic(DeviceAccessor(aCountDevice->get()),
+		//		countsDevice->get(), DeviceAccessor(numTermsDevice->get()),
+		//		indexDevice->get(), tempPartitionsDevice->get(), context);
+			LoadBalanceSearchDynamic(count, countsDevice->get(), numTerms,
+				indexDevice->get(), tempPartitionsDevice->get(), context);
+		else
+			LoadBalanceSearch(count, countsDevice->get(), numTerms, 
+				indexDevice->get(), context);
+	}
 	double elapsed = context.Split();
 	
 	double bytes = sizeof(int) * total;
@@ -120,19 +135,28 @@ const int Tests[][2] = {
 };
 const int NumTests = sizeof(Tests) / sizeof(*Tests);
 
-
 int main(int argc, char** argv) {
 	ContextPtr context = CreateCudaDevice(argc, argv, true);
 
+	printf("Static scheduling:\n");
 	for(int test = 0; test < NumTests; ++test) {
-		BenchmarkLoadBalance(Tests[test][0], Tests[test][1], 0.25,
+		BenchmarkLoadBalance(Tests[test][0], Tests[test][1], 0.25, false,
 			*context);
 	}
+
+
+	printf("Dynamic scheduling:\n");
+	for(int test = 0; test < NumTests; ++test) {
+		BenchmarkLoadBalance(Tests[test][0], Tests[test][1], 0.25, true,
+			*context);
+	}	
+
+/*
 	printf("\n");
 	for(int test = 0; test < 10; ++test) {
 		double ratio = .05 + .10 * test;
-		BenchmarkLoadBalance(10000000, 300, ratio, *context);
+		BenchmarkLoadBalance(10000000, 300, ratio, dynamic, *context);
 	}
-
+*/
 	return 0;
 }

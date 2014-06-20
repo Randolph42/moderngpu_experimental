@@ -54,6 +54,111 @@ MGPU_HOST_DEVICE T* PtrOffset(T* p, ptrdiff_t i) {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+
+template<typename T, bool DeviceMem>
+struct ParamAccessor {
+	T val;
+	MGPU_HOST_DEVICE ParamAccessor(T x) : val(x) { }
+	MGPU_HOST_DEVICE ParamAccessor(const ParamAccessor& rhs) : val(rhs.val) { }
+
+	MGPU_HOST_DEVICE T Access() const { return val; }
+};
+template<typename T>
+struct ParamAccessor<T, true> {
+	const T* p_global;
+	MGPU_HOST_DEVICE ParamAccessor(const T* x_global) : p_global(x_global) { }
+	MGPU_HOST_DEVICE ParamAccessor(const ParamAccessor& rhs) :
+		p_global(rhs.p_global) { }
+
+	MGPU_DEVICE T Access() { return *p_global; }
+};
+
+template<typename T>
+ParamAccessor<T, false> HostAccessor(T x) {
+	return ParamAccessor<T, false>(x);
+}
+template<typename T>
+ParamAccessor<T, true> DeviceAccessor(T* p) {
+	return ParamAccessor<T, true>(p);
+}
+
+// Function for calling ParamAccessor::Access.
+template<typename T, bool DeviceMem>
+MGPU_DEVICE T ParamAccess(ParamAccessor<T, DeviceMem> x) {
+	return x.Access();
+}
+
+// Unencapsulated type.
+template<typename T>
+struct ParamType {
+	typedef T Type;
+};
+
+// Host-side encapsulated type.
+template<typename T>
+struct ParamType<ParamAccessor<T, false> > {
+	typedef T Type;
+};
+
+// Device-side encapsulated type.
+template<typename T>
+struct ParamType<ParamAccessor<T, true> > {
+	typedef T Type;
+};
+
+// Function for interface consistency with ParamAccessor but for unwrapped 
+// types.
+template<typename T>
+MGPU_DEVICE T ParamAccess(T x) {
+	return x;
+}
+
+// WorkDistribution assigns the next tile of work to the next CTA that waits on
+// NextTile(). The number of tiles is typically computed inside the dynamic 
+// kernel from arguments passed in through device memory.
+// Counters are provided by MgpuContext::GetCounter, which maintains a large
+// array of allocated and zero counters.
+struct WorkDistribution {
+	struct Storage {
+		int counter;
+	};
+
+	// Dynamically pulls the next work tile for this CTA.
+	// Note that you must initialize the tile reference to -1 on entry.
+	// The first tile for each CTA is executed immediately without accessing
+	// the shared counter.
+	MGPU_DEVICE static bool WorkStealing(int tid, int numTiles, 
+		int* counter_global, Storage& storage, int& tile) {
+
+		if(!tid) {
+			// The first thread atomically adds.
+			int next = atomicAdd(counter_global, 1);
+			storage.counter = next;
+		}
+		__syncthreads();
+
+		tile = storage.counter;
+		__syncthreads();
+
+		return tile < numTiles;
+	}
+
+	MGPU_DEVICE static bool EvenShare(int tid, int numTiles,
+		int* counter_global, Storage& storage, int& tile) {
+
+		if(-1 == tile)
+			tile = blockIdx.x;
+		else
+			tile += gridDim.x;
+
+		return tile < numTiles;
+	}
+};
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////
 // Task range support
 // Evenly distributes variable-length arrays over a fixed number of CTAs.
 

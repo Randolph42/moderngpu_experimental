@@ -33,6 +33,7 @@
  ******************************************************************************/
 
 #include "util/mgpucontext.h"
+#include <cuda_occupancy.h>
 
 namespace mgpu {
 	
@@ -182,6 +183,49 @@ std::string CudaDevice::DeviceString() const {
 		_prop.memoryClockRate / 1000.0, _prop.memoryBusWidth, memBandwidth,
 		_prop.ECCEnabled ? "Enabled" : "Disabled");
 	return s;
+}
+
+int CudaDevice::OccupancySM(const void* func, int ctaSize) {
+	// Is it already cached?
+	FuncType f = std::make_pair(func, ctaSize);
+	std::map<FuncType, int>::iterator i = _occupancyCache.find(f);
+	if(i == _occupancyCache.end()) {
+		// Compute the occupancy
+
+		// Translate from cudaDeviceProp to cudaOccDeviceProp.
+		cudaOccDeviceProp prop;
+		prop.major = _prop.major;
+		prop.minor = _prop.minor;
+		prop.sharedMemPerBlock = _prop.sharedMemPerBlock;
+		prop.sharedMemPerMultiprocessor = _prop.sharedMemPerMultiprocessor;
+		prop.regsPerBlock = _prop.regsPerBlock;
+		prop.regsPerMultiprocessor = _prop.regsPerMultiprocessor;
+		prop.warpSize = _prop.warpSize;
+		prop.maxThreadsPerBlock = _prop.maxThreadsPerBlock;
+		prop.maxThreadsPerMultiProcessor = _prop.maxThreadsPerMultiProcessor;
+
+		// Transform from cudaFuncattributes to cudaoccFuncAttributes.
+		cudaFuncAttributes attr;
+		cudaFuncGetAttributes(&attr, func);
+
+		cudaOccFuncAttributes attr2;
+		attr2.maxThreadsPerBlock = ctaSize;
+		attr2.numRegs = attr.numRegs;
+		attr2.sharedSizeBytes = attr.sharedSizeBytes;
+
+		// Compute CTAs per SM.
+		cudaOccDeviceState state = { (int)CACHE_PREFER_NONE };		
+		cudaOccResult result;
+		int occ = cudaOccMaxActiveBlocksPerMultiprocessor(&prop, &attr2, 
+			ctaSize, 0, &state, &result);
+
+		i = _occupancyCache.insert(std::make_pair(f, occ)).first;
+	}
+	return i->second;
+}
+
+int CudaDevice::OccupancyDevice(const void* func, int ctaSize) {
+	return OccupancySM(func, ctaSize) * NumSMs();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -439,7 +483,7 @@ cudaError_t CudaAllocBuckets::Malloc(size_t size, void** p) {
 	if(size) error = cudaMalloc(p, allocSize);
 	while((cudaErrorMemoryAllocation == error) && (_committed < _allocated)) {
 		SetCapacity(_capacity - _capacity / 10, _maxObjectSize);
-		error = cudaMalloc(&p, size);
+		error = cudaMalloc(p, size);
 	}
 	if(cudaSuccess != error) return error;
 

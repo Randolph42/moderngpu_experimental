@@ -40,13 +40,23 @@
 namespace mgpu {
 
 ////////////////////////////////////////////////////////////////////////////////
-// BinarySearchPartitions
+// KernelBinarySearch
+
+enum { BINARY_SEARCH_CTA_SIZE = 64 };
+
+MGPU_HOST_DEVICE int NumBinarySearchPartitions(int count, int nv) {
+	return MGPU_DIV_UP(count, nv);
+}
+MGPU_HOST_DEVICE int NumBinarySearchBlocks(int numPartitions) {
+	return MGPU_DIV_UP(numPartitions + 1, BINARY_SEARCH_CTA_SIZE);
+}
 
 template<int NT, MgpuBounds Bounds, typename It, typename Comp>
-__global__ void KernelBinarySearch(int count, It data_global, int numItems,
-	int nv, int* partitions_global, int numSearches, Comp comp) {
+MGPU_DEVICE static void KernelBinarySearch(int tid, int block, int count, 
+	It data_global, int numItems, int nv, int* partitions_global,
+	int numSearches, Comp comp) {
 
-	int gid = NT * blockIdx.x + threadIdx.x;
+	int gid = NT * block + tid;
 	if(gid < numSearches) {
 		int p = BinarySearch<Bounds>(data_global, numItems, 
 			min(nv * gid, count), comp);
@@ -54,31 +64,95 @@ __global__ void KernelBinarySearch(int count, It data_global, int numItems,
 	}
 }
 
+// Static launch version.
+template<int NT, MgpuBounds Bounds, typename It, typename Comp>
+__global__ void KernelStaticBinarySearch(int count, It data_global,
+	int numItems, int nv, int* partitions_global, int numSearches, Comp comp) {
+
+	KernelBinarySearch<NT, Bounds>(threadIdx.x, blockIdx.x, count,
+		data_global, numItems, nv, partitions_global, numSearches, comp);
+}
+
 template<MgpuBounds Bounds, typename It1, typename Comp>
 MGPU_MEM(int) BinarySearchPartitions(int count, It1 data_global, int numItems,
 	int nv, Comp comp, CudaContext& context) {
 
-	const int NT = 64;
-	int numBlocks = MGPU_DIV_UP(count, nv);
-	int numPartitionBlocks = MGPU_DIV_UP(numBlocks + 1, NT);
-	MGPU_MEM(int) partitionsDevice = context.Malloc<int>(numBlocks + 1);
+	int numPartitions = NumBinarySearchPartitions(count, nv);
+	int numBlocks = NumBinarySearchBlocks(numPartitions);
+	MGPU_MEM(int) partitionsDevice = context.Malloc<int>(numPartitions + 1);
 
-	KernelBinarySearch<NT, Bounds>
-		<<<numPartitionBlocks, NT, 0, context.Stream()>>>(count, data_global, 
-		numItems, nv, partitionsDevice->get(), numBlocks + 1, comp);
-	MGPU_SYNC_CHECK("KernelBinarySearch");
+	KernelStaticBinarySearch<BINARY_SEARCH_CTA_SIZE, Bounds>
+		<<<numBlocks, BINARY_SEARCH_CTA_SIZE, 0, context.Stream()>>>(count, 
+			data_global, numItems, nv, partitionsDevice->get(), 
+			numPartitions + 1, comp);
+	MGPU_SYNC_CHECK("KernelStaticBinarySearch");
 
 	return partitionsDevice;
 }
 
+
+// Dynamic launch version.
+template<int NT, MgpuBounds Bounds, typename CountT, typename DataT,
+	typename NumItems, typename NV, typename PartitionsGlobal,
+	typename Comp>
+__global__ void KernelDynamicBinarySearch(int* counter_global, CountT count_,
+	DataT data_global_, NumItems numItems_, NV nv_, 
+	PartitionsGlobal partitions_global_, Comp comp) {
+
+	__shared__ WorkDistribution::Storage distribution_shared;
+	int tid = threadIdx.x;
+
+	int count = ParamAccess(count_);
+	typename ParamType<DataT>::Type data_global = ParamAccess(data_global_);
+	int numItems = ParamAccess(numItems_);
+	int nv = ParamAccess(nv_);
+	int* partitions_global = ParamAccess(partitions_global_);
+	
+	int numPartitions = NumBinarySearchPartitions(count, nv);
+	int numTiles = NumBinarySearchBlocks(numPartitions);
+
+	int tile = -1;
+	while(WorkDistribution::WorkStealing(tid, numTiles, counter_global, 
+		distribution_shared, tile)) {
+
+		KernelBinarySearch<NT, Bounds>(tid, tile, count, data_global, 
+			numItems, nv, partitions_global, numPartitions + 1, comp);
+	}
+}
+
+template<MgpuBounds Bounds, typename CountT, typename DataT,
+	typename NumItems, typename NV, typename PartitionsGlobal, 
+	typename Comp>
+void BinarySearchPartitionsDynamic(CountT count_, DataT data_global_, 
+	NumItems numItems_, NV nv_, PartitionsGlobal partitions_global_, 
+	Comp comp, CudaContext& context) {
+
+	// Compute the number of CTAs that can run concurrently.
+	int occ = context.Device().OccupancyDevice(
+		&KernelDynamicBinarySearch<BINARY_SEARCH_CTA_SIZE, Bounds, CountT,
+			DataT, NumItems, NV, PartitionsGlobal, Comp>,
+		BINARY_SEARCH_CTA_SIZE);
+
+	// Retrieve a zero in device memory to keep the next tile to process.
+	int* counter_global = context.GetCounter();
+
+	// Load the kernel with dynamic work distribution.
+	KernelDynamicBinarySearch<BINARY_SEARCH_CTA_SIZE, Bounds>
+		<<<occ, BINARY_SEARCH_CTA_SIZE, 0, context.Stream()>>>(counter_global,
+			count_, data_global_, numItems_, nv_, partitions_global_, comp);
+
+	MGPU_SYNC_CHECK("KernelDynamicBinarySearch");
+}
+
 ////////////////////////////////////////////////////////////////////////////////
-// MergePathPartitions
+// KernelMergePartition
 
 template<int NT, MgpuBounds Bounds, typename It1, typename It2, typename Comp>
-__global__ void KernelMergePartition(It1 a_global, int aCount, It2 b_global, 
-	int bCount, int nv, int coop, int* mp_global, int numSearches, Comp comp) {
+MGPU_DEVICE void KernelMergePartition(int tid, int block, It1 a_global, 
+	int aCount, It2 b_global, int bCount, int nv, int coop, int* mp_global, 
+	int numSearches, Comp comp) {
 
-	int partition = NT * blockIdx.x + threadIdx.x;
+	int partition = NT * block + tid;
 	if(partition < numSearches) {
 		int a0 = 0, b0 = 0;
 		int gid = nv * partition;
@@ -93,28 +167,92 @@ __global__ void KernelMergePartition(It1 a_global, int aCount, It2 b_global,
 			// lists.
 			gid -= a0;
 		}
-		int mp = MergePath<Bounds>(a_global + a0, aCount, b_global + b0, bCount,
-			min(gid, aCount + bCount), comp);
+		int mp = MergePath<Bounds>(a_global + a0, aCount, b_global + b0, 
+			bCount, min(gid, aCount + bCount), comp);
 		mp_global[partition] = mp;
 	}
+}
+
+template<int NT, MgpuBounds Bounds, typename It1, typename It2, typename Comp>
+__global__ void KernelStaticMergePartition(It1 a_global, int aCount,
+	It2 b_global, int bCount, int nv, int coop, int* mp_global, 
+	int numSearches, Comp comp) {
+
+	KernelMergePartition<NT, Bounds>(threadIdx.x, blockIdx.x, a_global, aCount,
+		b_global, bCount, nv, coop, mp_global, numSearches, comp);
 }
 
 template<MgpuBounds Bounds, typename It1, typename It2, typename Comp>
 MGPU_MEM(int) MergePathPartitions(It1 a_global, int aCount, It2 b_global,
 	int bCount, int nv, int coop, Comp comp, CudaContext& context) {
 
-	const int NT = 64;
-	int numPartitions = MGPU_DIV_UP(aCount + bCount, nv);
-	int numPartitionBlocks = MGPU_DIV_UP(numPartitions + 1, NT);
+	int numPartitions = NumBinarySearchPartitions(aCount + bCount, nv);
+	int numBlocks = NumBinarySearchBlocks(numPartitions);
 	MGPU_MEM(int) partitionsDevice = context.Malloc<int>(numPartitions + 1);
 
-	KernelMergePartition<NT, Bounds>
-		<<<numPartitionBlocks, NT, 0, context.Stream()>>>(a_global, aCount,
-		b_global, bCount, nv, coop, partitionsDevice->get(), numPartitions + 1, 
-		comp);
-	MGPU_SYNC_CHECK("KernelMergePartition");
+	KernelStaticMergePartition<BINARY_SEARCH_CTA_SIZE, Bounds>
+		<<<numBlocks, BINARY_SEARCH_CTA_SIZE, 0, context.Stream()>>>(a_global,
+		aCount, b_global, bCount, nv, coop, partitionsDevice->get(),
+		numPartitions + 1, comp);
+	MGPU_SYNC_CHECK("KernelStaticMergePartition");
 
 	return partitionsDevice;
+}
+
+
+template<int NT, MgpuBounds Bounds, typename AGlobal, typename ACount,
+	typename BGlobal, typename BCount, typename NV, typename Coop, 
+	typename MPGlobal, typename Comp>
+__global__ void KernelDynamicMergePartition(int* counter_global, 
+	AGlobal a_global_, ACount aCount_, BGlobal b_global_, BCount bCount_,
+	NV nv_, Coop coop_, MPGlobal mp_global_, Comp comp) {
+
+	__shared__ WorkDistribution::Storage workDistribution_shared;
+	int tid = threadIdx.x;
+
+	typename ParamType<AGlobal>::Type a_global = ParamAccess(a_global_);
+	int aCount = ParamAccess(aCount_);
+	typename ParamType<BGlobal>::Type b_global = ParamAccess(b_global_);
+	int bCount = ParamAccess(bCount_);
+	int nv = ParamAccess(nv_);
+	int coop = ParamAccess(coop_);
+	typename ParamType<MPGlobal>::Type mp_global = ParamAccess(mp_global_);
+
+	int numPartitions = NumBinarySearchPartitions(aCount + bCount, nv);
+	int numTiles = NumBinarySearchBlocks(numPartitions);
+
+	int tile = -1;
+	while(WorkDistribution::WorkStealing(tid, numTiles, counter_global, 
+		workDistribution_shared, tile)) {
+
+		KernelMergePartition<NT, Bounds>(tid, tile, a_global, aCount, b_global,
+			bCount, nv, coop, mp_global, numPartitions + 1, comp);
+	}
+}
+
+template<MgpuBounds Bounds, typename AGlobal, typename ACount, typename BGlobal,
+	typename BCount, typename NV, typename Coop, typename MPGlobal, 
+	typename Comp>
+void MergePathPartitionsDynamic(AGlobal a_global_, ACount aCount_, 
+	BGlobal b_global_, BCount bCount_, NV nv_, Coop coop_, 
+	MPGlobal mp_global_, Comp comp, CudaContext& context) {
+
+	// Launch only enough CTAs to exactly fill the device.
+	int occ = context.Device().OccupancyDevice(
+		(void*)&KernelDynamicMergePartition<BINARY_SEARCH_CTA_SIZE, Bounds, 
+			AGlobal, ACount, BGlobal, BCount, NV, Coop, MPGlobal, Comp>,
+		BINARY_SEARCH_CTA_SIZE);
+
+	// Get a zero-initialized counter for the work-distribution mechanism.
+	int* counter_global = context.GetCounter();
+
+	// Launch the dynamically-scheduled kernel.
+	KernelDynamicMergePartition<BINARY_SEARCH_CTA_SIZE, Bounds>
+		<<<occ, BINARY_SEARCH_CTA_SIZE, 0, context.Stream()>>>(counter_global,
+			a_global_, aCount_, b_global_, bCount_, nv_, coop_, mp_global_, 
+			comp);
+
+	MGPU_SYNC_CHECK("KernelDynamicBinarySearch");
 }
 
 ////////////////////////////////////////////////////////////////////////////////
