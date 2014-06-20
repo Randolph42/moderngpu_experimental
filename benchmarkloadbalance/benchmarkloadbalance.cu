@@ -138,16 +138,15 @@ const int NumTests = sizeof(Tests) / sizeof(*Tests);
 int main(int argc, char** argv) {
 	ContextPtr context = CreateCudaDevice(argc, argv, true);
 
-	printf("Static scheduling:\n");
-	for(int test = 0; test < NumTests; ++test) {
-		BenchmarkLoadBalance(Tests[test][0], Tests[test][1], 0.25, false,
-			*context);
-	}
-
-
 	printf("Dynamic scheduling:\n");
 	for(int test = 0; test < NumTests; ++test) {
 		BenchmarkLoadBalance(Tests[test][0], Tests[test][1], 0.25, true,
+			*context);
+	}
+
+	printf("Static scheduling:\n");
+	for(int test = 0; test < NumTests; ++test) {
+		BenchmarkLoadBalance(Tests[test][0], Tests[test][1], 0.25, false,
 			*context);
 	}	
 

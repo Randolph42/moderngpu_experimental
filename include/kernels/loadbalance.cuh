@@ -118,7 +118,7 @@ __global__ void KernelDynamicLoadBalance(int* counter_global, ACount aCount_,
 	const int NV = NT * VT;
 
 	union Shared {
-		typename WorkDistribution::Storage workDistribution;
+		typename WorkDistribution::Storage distribution;
 		typename KernelLoadBalance<NT, VT>::Storage loadBalance;
 	};
 	__shared__ Shared shared;
@@ -131,12 +131,11 @@ __global__ void KernelDynamicLoadBalance(int* counter_global, ACount aCount_,
 
 	int numTiles = MGPU_DIV_UP(aCount + bCount, NV);
 
-	int tile = -1;
-	while(WorkDistribution::WorkStealing(tid, numTiles, counter_global, 
-		shared.workDistribution, tile)) {
-
-		KernelLoadBalance<NT, VT>::Kernel(tid, tile, aCount, b_global, bCount,
-			mp_global, indices_global, shared.loadBalance);
+	WorkDistribution wd(numTiles);
+//	while(wd.WorkStealing(tid, counter_global, shared.distribution)) {
+	while(wd.EvenShare()) {
+		KernelLoadBalance<NT, VT>::Kernel(tid, wd.CurrentTile(), aCount, 
+			b_global, bCount, mp_global, indices_global, shared.loadBalance);
 	}
 }
 

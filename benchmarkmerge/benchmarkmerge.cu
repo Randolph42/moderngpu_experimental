@@ -38,7 +38,8 @@
 using namespace mgpu;
 
 template<typename T>
-void BenchmarkMergeKeys(int count, int numIt, CudaContext& context) {
+void BenchmarkMergeKeys(int count, int numIt, bool dynamic, 
+	CudaContext& context) {
 
 #ifdef _DEBUG
 	numIt = 1;
@@ -54,11 +55,19 @@ void BenchmarkMergeKeys(int count, int numIt, CudaContext& context) {
 	a->ToHost(aHost);
 	b->ToHost(bHost);
 	std::vector<T> cHost(count);
+
+	MGPU_MEM(int) partitionsDevice = context.Malloc<int>(
+		MGPU_DIV_UP(aCount + bCount, 500) + 1);
 		
 	// Benchmark MGPU
 	context.Start();
-	for(int it = 0; it < numIt; ++it)
-		MergeKeys(a->get(), aCount, b->get(), bCount, c->get(), context);
+	for(int it = 0; it < numIt; ++it) {
+		if(dynamic)
+			MergeKeysDynamic<int*, int, int*, int, int*>(a->get(), aCount, b->get(), bCount, c->get(),
+				mgpu::less<T>(), partitionsDevice->get(), context);
+		else
+			MergeKeys(a->get(), aCount, b->get(), bCount, c->get(), context);
+	}
 	double mgpuElapsed = context.Split();
 	
 	// Benchmark STL
@@ -89,7 +98,8 @@ void BenchmarkMergeKeys(int count, int numIt, CudaContext& context) {
 }
 
 template<typename KeyType, typename ValType>
-void BenchmarkMergePairs(int count, int numIt, CudaContext& context) {
+void BenchmarkMergePairs(int count, int numIt, bool dynamic, 
+	CudaContext& context) {
 
 #ifdef _DEBUG
 	numIt = 1;
@@ -109,12 +119,22 @@ void BenchmarkMergePairs(int count, int numIt, CudaContext& context) {
 	aKeys->ToHost(aHost);
 	bKeys->ToHost(bHost);
 
+
+	MGPU_MEM(int) partitionsDevice = context.Malloc<int>(
+		MGPU_DIV_UP(aCount + bCount, 500) + 1);
+
 	// Benchmark MGPU.
 	context.Start();
-	for(int it = 0; it < numIt; ++it)
-		MergePairs(aKeys->get(), aVals->get(), aCount, bKeys->get(), 
-			bVals->get(), bCount, cKeys->get(), cVals->get(), 
-			mgpu::less<KeyType>(), context);
+	for(int it = 0; it < numIt; ++it) {
+		if(dynamic) 
+			MergePairsDynamic(aKeys->get(), aVals->get(), aCount, bKeys->get(), 
+				bVals->get(), bCount, cKeys->get(), cVals->get(), 
+				mgpu::less<KeyType>(), partitionsDevice->get(), context);
+		else
+			MergePairs(aKeys->get(), aVals->get(), aCount, bKeys->get(), 
+				bVals->get(), bCount, cKeys->get(), cVals->get(), 
+				mgpu::less<KeyType>(), context);
+	}
 	double mgpuElapsed = context.Split();
 
 	double bytes = 2 * (sizeof(KeyType)  + sizeof(ValType)) * count;
@@ -162,13 +182,26 @@ int main(int argc, char** argv) {
 	typedef int64 T2;
 	
 	printf("Benchmarking merge-keys on type %s.\n", TypeIdName<T1>());
+	printf("Dynamic scheduling:\n");
 	for(int test = 0; test < NumTests; ++test)
-		BenchmarkMergeKeys<T1>(Tests[test][0], Tests[test][1], *context);
-	
-	printf("\nBenchmarking merge-pairs on type %s.\n", TypeIdName<T1>());
-	for(int test = 0; test < NumTests; ++test)
-		BenchmarkMergePairs<T1, T1>(Tests[test][0], Tests[test][1], *context);
+		BenchmarkMergeKeys<T1>(Tests[test][0], Tests[test][1], true, *context);
 
+	printf("\nStatic scheduling:\n");
+	for(int test = 0; test < NumTests; ++test)
+		BenchmarkMergeKeys<T1>(Tests[test][0], Tests[test][1], false, *context);
+
+	printf("\nBenchmarking merge-pairs on type %s.\n", TypeIdName<T1>());
+	printf("Dynamic scheduling:\n");
+	for(int test = 0; test < NumTests; ++test)
+		BenchmarkMergePairs<T1, T1>(Tests[test][0], Tests[test][1], true, 
+			*context);
+
+	printf("\nStatic scheduling:\n");
+	for(int test = 0; test < NumTests; ++test)
+		BenchmarkMergePairs<T1, T1>(Tests[test][0], Tests[test][1], false, 
+			*context);
+
+/*
 	printf("\nBenchmarking merge-keys on type %s.\n", TypeIdName<T2>());
 	for(int test = 0; test < NumTests; ++test)
 		BenchmarkMergeKeys<T2>(Tests[test][0], Tests[test][1], *context);
@@ -176,6 +209,6 @@ int main(int argc, char** argv) {
 	printf("\nBenchmarking merge-pairs on type %s.\n", TypeIdName<T2>());
 	for(int test = 0; test < NumTests; ++test)
 		BenchmarkMergePairs<T2, T2>(Tests[test][0], Tests[test][1], *context);
-		
+		*/
 	return 0;
 }

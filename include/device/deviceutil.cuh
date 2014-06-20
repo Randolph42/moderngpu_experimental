@@ -123,36 +123,46 @@ struct WorkDistribution {
 		int counter;
 	};
 
-	// Dynamically pulls the next work tile for this CTA.
-	// Note that you must initialize the tile reference to -1 on entry.
-	// The first tile for each CTA is executed immediately without accessing
-	// the shared counter.
-	MGPU_DEVICE static bool WorkStealing(int tid, int numTiles, 
-		int* counter_global, Storage& storage, int& tile) {
+	MGPU_DEVICE WorkDistribution(int numTiles) {
+		this->curTile = blockIdx.x - gridDim.x;
+		this->numTiles = numTiles;
+	}
 
-		if(!tid) {
-			// The first thread atomically adds.
-			int next = atomicAdd(counter_global, 1);
-			storage.counter = next;
+	MGPU_DEVICE int CurrentTile() const {
+		return curTile;
+	}
+
+	MGPU_DEVICE operator bool() const {
+		return curTile < numTiles;
+	}
+
+	MGPU_DEVICE bool WorkStealing(int tid, int* counter_global,
+		Storage& storage) {
+
+		// Attempt to execute 5 tiles per CTA before going to atomics.
+		curTile += gridDim.x;
+		if(curTile >= 5 * gridDim.x) {	
+			if(!tid) {
+				// The first thread atomically adds.
+				int next = atomicAdd(counter_global, 1) + 5 * gridDim.x;
+				storage.counter = next;
+			}
+			__syncthreads();
+
+			curTile = storage.counter;
+			__syncthreads();
 		}
-		__syncthreads();
 
-		tile = storage.counter;
-		__syncthreads();
-
-		return tile < numTiles;
+		return curTile < numTiles;
 	}
 
-	MGPU_DEVICE static bool EvenShare(int tid, int numTiles,
-		int* counter_global, Storage& storage, int& tile) {
-
-		if(-1 == tile)
-			tile = blockIdx.x;
-		else
-			tile += gridDim.x;
-
-		return tile < numTiles;
+	MGPU_DEVICE bool EvenShare() {
+		curTile += gridDim.x;
+		return curTile < numTiles;
 	}
+
+	int curTile;
+	int numTiles;
 };
 
 

@@ -99,7 +99,6 @@ __global__ void KernelDynamicBinarySearch(int* counter_global, CountT count_,
 	DataT data_global_, NumItems numItems_, NV nv_, 
 	PartitionsGlobal partitions_global_, Comp comp) {
 
-	__shared__ WorkDistribution::Storage distribution_shared;
 	int tid = threadIdx.x;
 
 	int count = ParamAccess(count_);
@@ -111,12 +110,11 @@ __global__ void KernelDynamicBinarySearch(int* counter_global, CountT count_,
 	int numPartitions = NumBinarySearchPartitions(count, nv);
 	int numTiles = NumBinarySearchBlocks(numPartitions);
 
-	int tile = -1;
-	while(WorkDistribution::WorkStealing(tid, numTiles, counter_global, 
-		distribution_shared, tile)) {
-
-		KernelBinarySearch<NT, Bounds>(tid, tile, count, data_global, 
-			numItems, nv, partitions_global, numPartitions + 1, comp);
+	WorkDistribution wd(numTiles);
+	while(wd.EvenShare()) {
+		KernelBinarySearch<NT, Bounds>(tid, wd.CurrentTile(), count, 
+			data_global, numItems, nv, partitions_global, numPartitions + 1,
+			comp);
 	}
 }
 
@@ -207,7 +205,6 @@ __global__ void KernelDynamicMergePartition(int* counter_global,
 	AGlobal a_global_, ACount aCount_, BGlobal b_global_, BCount bCount_,
 	NV nv_, Coop coop_, MPGlobal mp_global_, Comp comp) {
 
-	__shared__ WorkDistribution::Storage workDistribution_shared;
 	int tid = threadIdx.x;
 
 	typename ParamType<AGlobal>::Type a_global = ParamAccess(a_global_);
@@ -221,12 +218,11 @@ __global__ void KernelDynamicMergePartition(int* counter_global,
 	int numPartitions = NumBinarySearchPartitions(aCount + bCount, nv);
 	int numTiles = NumBinarySearchBlocks(numPartitions);
 
-	int tile = -1;
-	while(WorkDistribution::WorkStealing(tid, numTiles, counter_global, 
-		workDistribution_shared, tile)) {
-
-		KernelMergePartition<NT, Bounds>(tid, tile, a_global, aCount, b_global,
-			bCount, nv, coop, mp_global, numPartitions + 1, comp);
+	WorkDistribution wd(numTiles);
+	while(wd.EvenShare()) {
+		KernelMergePartition<NT, Bounds>(tid, wd.CurrentTile(), a_global,
+			aCount, b_global, bCount, nv, coop, mp_global, numPartitions + 1,
+			comp);
 	}
 }
 

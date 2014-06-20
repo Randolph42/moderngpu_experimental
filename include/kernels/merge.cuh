@@ -186,10 +186,12 @@ MGPU_LAUNCH_BOUNDS void KernelDynamicMerge(int* counter_global,
 
 	typedef KernelMerge<NT, VT, KeyType> KM;
 	union Shared {
-		typename KM::Storage mergeStorage;
-		typename WorkDistribution::Storage workDistribution;
+		typename KM::Storage merge;
+		typename WorkDistribution::Storage distribution;
 	};
 	__shared__ Shared shared;
+
+	int tid = threadIdx.x;
 
 	// Pull dynamic parameters into register.
 	typename ParamType<KeysIt1>::Type aKeys_global = ParamAccess(aKeys_global_);
@@ -207,15 +209,13 @@ MGPU_LAUNCH_BOUNDS void KernelDynamicMerge(int* counter_global,
 	int numTiles = MGPU_DIV_UP(aCount + bCount, NV);
 
 	// Dynamically loop over tiles.
-	int tid = threadIdx.x;
-	int tile = -1;
-	while(WorkDistribution::EvenShare(tid, numTiles, counter_global, 
-		shared.workDistribution, tile)) {
-
-		KM::Kernel<HasValues, LoadExtended>(tid, tile, aKeys_global,
-			aVals_global, aCount, bKeys_global, bVals_global, bCount, 
-			mp_global, coop, keys_global, vals_global, comp, 
-			shared.mergeStorage);
+	WorkDistribution wd(numTiles);
+//	while(wd.WorkStealing(tid, counter_global, shared.distribution)) {
+	while(wd.EvenShare()) {
+		KM::Kernel<HasValues, LoadExtended>(tid, wd.CurrentTile(), 
+			aKeys_global, aVals_global, aCount, bKeys_global, 
+			bVals_global, bCount, mp_global, coop, keys_global,
+			vals_global, comp, shared.merge);
 	}
 }
 
@@ -225,7 +225,6 @@ MGPU_HOST void MergeKeysDynamic(KeysIt1 aKeys_global_, ACount aCount_,
 	KeysIt2 bKeys_global_, BCount bCount_, KeysIt3 keys_global_, Comp comp, 
 	int* partitions_global, CudaContext& context) {
 
-	
 	typedef typename std::iterator_traits<KeysIt1>::value_type T;
 	typedef LaunchBoxVT<
 		128, 23, 0,
@@ -233,11 +232,69 @@ MGPU_HOST void MergeKeysDynamic(KeysIt1 aKeys_global_, ACount aCount_,
 		128, (sizeof(T) > 4) ? 7 : 11, 0
 	> Tuning;
 	int2 launch = Tuning::GetLaunchParams(context);
+	int NT = launch.x;
+	int NV = launch.x * launch.y;
 
-	const int NV = launch.x * launch.y;
-	MGPU_MEM(int) partitionsDevice = MergePathPartitions<MgpuBoundsLower>(
-		aKeys_global, aCount, bKeys_global, bCount, NV, 0, comp, context);
+	// Use the dyanmic version of the Merge Path partitioning search.
+	MergePathPartitionsDynamic<MgpuBoundsLower>(aKeys_global_, aCount_,
+		bKeys_global_, bCount_, NV, 0, partitions_global, comp, context);
 
+	// Get the occupancy of the merge kernel.
+	int occ = context.Device().OccupancyDevice(
+		(void*)&KernelDynamicMerge<Tuning, false, true, KeysIt1, ACount,
+		KeysIt2, BCount, KeysIt3, const int*, const int*, int*, Comp>, NT);
+
+	// Provision a fresh counter for work distribution.	
+	int* counter_global = context.GetCounter();
+
+	// Launch a dynamically-scheduled kernel.
+	KernelDynamicMerge<Tuning, false, true><<<occ, NT, 0, context.Stream()>>>(
+		counter_global, aKeys_global_, (const int*)0, aCount_, bKeys_global_, 
+		(const int*)0, bCount_, partitions_global, 0, keys_global_, (int*)0,
+		comp);
+
+	MGPU_SYNC_CHECK("KernelDynamicMerge");
+}
+
+
+template<typename KeysIt1, typename ACount, typename KeysIt2, typename BCount,
+	typename KeysIt3, typename ValsIt1, typename ValsIt2, typename ValsIt3, 
+	typename Comp>
+MGPU_HOST void MergePairsDynamic(KeysIt1 aKeys_global_, ValsIt1 aVals_global_, 
+	ACount aCount_, KeysIt2 bKeys_global_, ValsIt2 bVals_global_, 
+	BCount bCount_, KeysIt3 keys_global_, ValsIt3 vals_global_, Comp comp, 
+	int* partitions_global, CudaContext& context) {
+
+	typedef typename std::iterator_traits<KeysIt1>::value_type T;
+	typedef LaunchBoxVT<
+		128, 11, 0,
+		128, 11, 0,
+		128, (sizeof(T) > 4) ? 7 : 11, 0
+	> Tuning;
+	int2 launch = Tuning::GetLaunchParams(context);
+	int NT = launch.x;
+	int NV = launch.x * launch.y;
+
+	// Use the dyanmic version of the Merge Path partitioning search.
+	MergePathPartitionsDynamic<MgpuBoundsLower>(aKeys_global_, aCount_,
+		bKeys_global_, bCount_, NV, 0, partitions_global, comp, context);
+
+	// Get the occupancy of the merge kernel.
+	int occ = context.Device().OccupancyDevice(
+		(void*)&KernelDynamicMerge<Tuning, false, true, KeysIt1, ACount,
+		KeysIt2, BCount, KeysIt3, const int*, const int*, int*, Comp>, NT);
+
+	// Provision a fresh counter for work distribution.	
+	int* counter_global = context.GetCounter();
+
+	// Launch a dynamically-scheduled kernel.
+	KernelDynamicMerge<Tuning, true, false><<<occ, NT, 0, context.Stream()>>>(
+		counter_global, aKeys_global_, aVals_global_, aCount_, bKeys_global_, 
+		bVals_global_, bCount_, partitions_global, 0, keys_global_, 
+		vals_global_, comp);
+
+	MGPU_SYNC_CHECK("KernelDynamicMerge");
 }
 
 } // namespace mgpu
+
