@@ -212,6 +212,9 @@ MGPU_LAUNCH_BOUNDS void KernelDynamicMerge(int* counter_global,
 	WorkDistribution wd(numTiles);
 //	while(wd.WorkStealing(tid, counter_global, shared.distribution)) {
 	while(wd.EvenShare()) {
+		// TWIDDLE THE TID TO PREVENT THE COMPILER FROM KEEPING POINTLESS 
+		// EXPRESSIONS IN REGISTER. STILL NOT ENOUGH...
+		tid = (~31 & tid) | (31 & (tid + 1));
 		KM::Kernel<HasValues, LoadExtended>(tid, wd.CurrentTile(), 
 			aKeys_global, aVals_global, aCount, bKeys_global, 
 			bVals_global, bCount, mp_global, coop, keys_global,

@@ -180,16 +180,16 @@ int main(int argc, char** argv) {
 		
 	typedef int T1;
 	typedef int64 T2;
-	
-//	printf("Benchmarking merge-keys on type %s.\n", TypeIdName<T1>());
-//	printf("Dynamic scheduling:\n");
-//	for(int test = 0; test < NumTests; ++test)
-//		BenchmarkMergeKeys<T1>(Tests[test][0], Tests[test][1], true, *context);
+/*	
+	printf("Benchmarking merge-keys on type %s.\n", TypeIdName<T1>());
+	printf("Dynamic scheduling:\n");
+	for(int test = 0; test < NumTests; ++test)
+		BenchmarkMergeKeys<T1>(Tests[test][0], Tests[test][1], true, *context);
 
-//	printf("\nStatic scheduling:\n");
-//	for(int test = 0; test < NumTests; ++test)
-//		BenchmarkMergeKeys<T1>(Tests[test][0], Tests[test][1], false, *context);
-
+	printf("\nStatic scheduling:\n");
+	for(int test = 0; test < NumTests; ++test)
+		BenchmarkMergeKeys<T1>(Tests[test][0], Tests[test][1], false, *context);
+*/
 	printf("\nBenchmarking merge-pairs on type %s.\n", TypeIdName<T1>());
 	printf("Dynamic scheduling:\n");
 	for(int test = 0; test < NumTests; ++test)
